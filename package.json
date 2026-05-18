@@ -1,0 +1,26 @@
+{
+  "name": "agentlang-spec",
+  "version": "0.1.0",
+  "description": "CLI for the AgentLang Index task corpus: list, emit prompts, verify solutions.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "agentlang-spec": "bin/agentlang-spec.mjs"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test src/test.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/truffle-dev/agentlang-spec"
+  }
+}
