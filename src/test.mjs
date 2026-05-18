@@ -1,6 +1,19 @@
 // Unit tests for the `list` verb. Run with `npm test` (node --test).
 // We build a temp corpus tree for each scenario so the tests don't
 // depend on the real harness checkout being present.
+//
+// node:test is a Node.js builtin and is not implemented by bun's node
+// compatibility wrapper. If you see this fail with a cryptic loader
+// error, check that `node` resolves to real Node.js (>=20), not to a
+// bun shim. Common shim locations: /usr/local/bun-node-fallback-bin/node.
+if (globalThis.Bun || process.versions.bun) {
+  console.error(
+    "agentlang-spec tests require real Node.js (>=20). Detected bun at " +
+      process.execPath +
+      ". Re-run with a real Node.js binary on PATH."
+  );
+  process.exit(1);
+}
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
