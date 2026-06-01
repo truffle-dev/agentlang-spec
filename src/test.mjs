@@ -27,6 +27,14 @@ import {
   formatTaskLine,
   loadTaskRecord,
 } from "./list.mjs";
+import {
+  SCAFFOLDS,
+  scaffoldFor,
+  renderUserPrompt,
+  parseEmitArgs,
+  loadPromptTemplate,
+  runEmit,
+} from "./emit.mjs";
 
 async function makeTempCorpus(layout) {
   const root = await mkdtemp(path.join(tmpdir(), "agentlang-spec-test-"));
@@ -134,6 +142,146 @@ test("loadTaskRecord throws a useful error on malformed JSON", async () => {
     await assert.rejects(
       () => loadTaskRecord(path.join(root, "999-bad-json")),
       /invalid JSON/
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// --- emit verb ---------------------------------------------------------
+
+async function makeTempCorpusWithPrompt(slug, body) {
+  const root = await mkdtemp(path.join(tmpdir(), "agentlang-spec-emit-"));
+  const taskDir = path.join(root, slug);
+  await mkdir(taskDir, { recursive: true });
+  await writeFile(path.join(taskDir, "prompt.md"), body);
+  return root;
+}
+
+test("SCAFFOLDS covers exactly the five canonical languages", () => {
+  assert.deepEqual(
+    Object.keys(SCAFFOLDS).sort(),
+    ["go", "python", "rust", "ts", "zero"]
+  );
+});
+
+test("scaffoldFor returns the per-language block and rejects unknown langs", () => {
+  assert.ok(scaffoldFor("zero").startsWith("Write a single Zero 0.1.2"));
+  assert.ok(scaffoldFor("python").includes("ref.py"));
+  assert.throws(() => scaffoldFor("ocaml"), /unknown --lang 'ocaml'/);
+});
+
+test("renderUserPrompt substitutes every {language_scaffold} occurrence", () => {
+  const tmpl = "head\n{language_scaffold}\nmid\n{language_scaffold}\ntail\n";
+  const out = renderUserPrompt(tmpl, "ts");
+  const expected =
+    "head\n" + SCAFFOLDS.ts + "\nmid\n" + SCAFFOLDS.ts + "\ntail\n";
+  assert.equal(out, expected);
+});
+
+test("renderUserPrompt is a no-op when the placeholder is absent", () => {
+  const tmpl = "no placeholder here\n";
+  assert.equal(renderUserPrompt(tmpl, "rust"), "no placeholder here\n");
+});
+
+test("parseEmitArgs accepts space-separated and equals-separated forms", () => {
+  assert.deepEqual(
+    parseEmitArgs(["--task", "000-hello-stdout", "--lang", "zero"]),
+    { task: "000-hello-stdout", lang: "zero", format: "prompt" }
+  );
+  assert.deepEqual(
+    parseEmitArgs(["--task=001-fibonacci-memoized", "--lang=python", "--format=prompt"]),
+    { task: "001-fibonacci-memoized", lang: "python", format: "prompt" }
+  );
+});
+
+test("parseEmitArgs rejects missing required flags and unknown format", () => {
+  assert.throws(() => parseEmitArgs(["--lang", "zero"]), /--task <slug> is required/);
+  assert.throws(() => parseEmitArgs(["--task", "x"]), /--lang <language> is required/);
+  assert.throws(
+    () => parseEmitArgs(["--task", "x", "--lang", "zero", "--format", "json"]),
+    /unknown --format 'json'/
+  );
+  assert.throws(
+    () => parseEmitArgs(["--what"]),
+    /unknown argument: --what/
+  );
+});
+
+test("loadPromptTemplate reads prompt.md from the corpus directory", async () => {
+  const root = await makeTempCorpusWithPrompt("000-hello-stdout", "BODY\n");
+  try {
+    const text = await loadPromptTemplate(root, "000-hello-stdout");
+    assert.equal(text, "BODY\n");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("loadPromptTemplate raises a clear error when prompt.md is missing", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "agentlang-spec-emit-miss-"));
+  try {
+    await assert.rejects(
+      () => loadPromptTemplate(root, "999-missing"),
+      /prompt not found:/
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("runEmit writes the rendered prompt to stdout", async () => {
+  const body =
+    "# Task: Hello\n\nDo it.\n\n## Language scaffold\n\n{language_scaffold}\n";
+  const root = await makeTempCorpusWithPrompt("000-hello-stdout", body);
+  const chunks = [];
+  const fakeStdout = { write: (s) => chunks.push(s) };
+  try {
+    await runEmit(["--task", "000-hello-stdout", "--lang", "go"], {
+      env: { AGENTLANG_CORPUS_DIR: root },
+      cwd: "/var/empty",
+      stdout: fakeStdout,
+    });
+    const out = chunks.join("");
+    assert.ok(out.startsWith("# Task: Hello"));
+    assert.ok(out.includes(SCAFFOLDS.go));
+    assert.ok(!out.includes("{language_scaffold}"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("runEmit honors AGENTLANG_CORPUS_DIR over cwd", async () => {
+  const body = "{language_scaffold}\n";
+  const root = await makeTempCorpusWithPrompt("000-hello-stdout", body);
+  const chunks = [];
+  const fakeStdout = { write: (s) => chunks.push(s) };
+  try {
+    await runEmit(["--task", "000-hello-stdout", "--lang", "rust"], {
+      env: { AGENTLANG_CORPUS_DIR: root },
+      cwd: "/var/empty",
+      stdout: fakeStdout,
+    });
+    assert.equal(chunks.join(""), SCAFFOLDS.rust + "\n");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("runEmit surfaces an unknown-language error from scaffoldFor", async () => {
+  const root = await makeTempCorpusWithPrompt(
+    "000-hello-stdout",
+    "{language_scaffold}\n"
+  );
+  try {
+    await assert.rejects(
+      () =>
+        runEmit(["--task", "000-hello-stdout", "--lang", "ocaml"], {
+          env: { AGENTLANG_CORPUS_DIR: root },
+          cwd: "/var/empty",
+          stdout: { write: () => {} },
+        }),
+      /unknown --lang 'ocaml'/
     );
   } finally {
     await rm(root, { recursive: true, force: true });

@@ -14,16 +14,16 @@ Pre-alpha. Scaffolded 2026-05-18. Three verbs planned:
 agentlang-spec list
     Print one line per task in the corpus.
 
-agentlang-spec emit --task <slug> --lang <lang> --format prompt
-    Render the language-specific prompt for a task. (not yet implemented)
+agentlang-spec emit --task <slug> --lang <lang> [--format prompt]
+    Render the language-specific prompt for a task.
 
 agentlang-spec verify --task <slug> --solution <path>
     Run the language toolchain in the sandbox shape and compare output
     against the hidden test cases. (not yet implemented)
 ```
 
-`list` is implemented today; `emit` and `verify` arrive once the harness
-runner is on the runway.
+`list` and `emit` are implemented today; `verify` arrives once its
+caller exists in the harness.
 
 ## `list`
 
@@ -40,6 +40,33 @@ The corpus directory resolves in this order:
 
 Case counts include both public and hidden cases. Languages are read
 from each task's `spec.json`.
+
+## `emit`
+
+```sh
+agentlang-spec emit --task 000-hello-stdout --lang zero
+```
+
+Reads `<corpus>/<task>/prompt.md` and substitutes the
+`{language_scaffold}` placeholder with the canonical per-language
+scaffold block (file name, stdin/stdout contract, fence tag, and any
+language-specific gotchas the harness expects the model to respect).
+Writes the rendered prompt to stdout.
+
+Languages: `zero`, `ts`, `rust`, `go`, `python`. Format is `prompt`
+today; future formats (`json` with structured metadata, raw template
+passthrough) land on the same surface.
+
+The corpus directory resolves the same way as `list`
+(`AGENTLANG_CORPUS_DIR` then `./corpus`).
+
+The scaffold strings are the canonical source-of-truth for how a task
+is framed to a model. The harness in
+[truffle-dev/agentlang-index](https://github.com/truffle-dev/agentlang-index)
+currently carries its own copy under
+`harness/src/agentlang_harness/prompt.py`; the two must stay in sync
+until a shared `corpus/scaffolds.json` lands and the harness reads
+through this CLI.
 
 ## Install
 
