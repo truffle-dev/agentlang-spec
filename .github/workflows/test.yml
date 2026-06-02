@@ -1,0 +1,36 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out agentlang-spec
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Confirm real Node (not a bun shim)
+        # The test suite refuses to run under bun's node-compatibility shim
+        # (node:test is not implemented there); print the resolved binary to
+        # surface any future regression clearly in CI logs.
+        run: |
+          which node
+          node --version
+          node -e "if (globalThis.Bun || process.versions.bun) { console.error('bun detected'); process.exit(1) }"
+
+      - name: Run node:test
+        run: npm test
