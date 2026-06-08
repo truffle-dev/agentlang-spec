@@ -8,7 +8,7 @@ shells out to it during run assembly and grading.
 
 ## Status
 
-Pre-alpha. Scaffolded 2026-05-18. Three verbs planned:
+Pre-alpha. Scaffolded 2026-05-18. Three verbs:
 
 ```
 agentlang-spec list
@@ -17,13 +17,11 @@ agentlang-spec list
 agentlang-spec emit --task <slug> --lang <lang> [--format prompt]
     Render the language-specific prompt for a task.
 
-agentlang-spec verify --task <slug> --solution <path>
-    Run the language toolchain in the sandbox shape and compare output
-    against the hidden test cases. (not yet implemented)
+agentlang-spec verify --task <slug> --solution <path> [--lang <lang>] [--timeout <seconds>]
+    Stage the solution into a scratch copy of the task and run
+    verify.sh against the resolved language. Streams stdout and stderr
+    to the caller. Exits with verify.sh's exit code (124 on timeout).
 ```
-
-`list` and `emit` are implemented today; `verify` arrives once its
-caller exists in the harness.
 
 ## `list`
 
@@ -61,7 +59,26 @@ The corpus directory resolves the same way as `list`
 (`AGENTLANG_CORPUS_DIR` then `./corpus`).
 
 The scaffold strings are the canonical source-of-truth for how a task
-is framed to a model. The harness in
+is framed to a model.
+
+## `verify`
+
+```sh
+agentlang-spec verify --task 000-hello-stdout --solution ./hello.py
+```
+
+Stages a scratch copy of `<corpus>/<task>/` in a temp directory,
+overwrites the reference file (`ref.zero`, `ref.ts`, `ref.rs`,
+`ref.go`, or `ref.py`) with the candidate solution, then runs
+`bash verify.sh --lang <lang>` inside the scratch dir. Streams
+verify.sh's stdout and stderr to the caller and exits with its
+return code. `124` signals a timeout (default 60s, override with
+`--timeout <seconds>`).
+
+The language is inferred from the solution file extension when
+`--lang` is omitted: `.zero`, `.ts`, `.rs`, `.go`, `.py`. The
+task's `spec.json` `languages` array must include the resolved
+language. The harness in
 [truffle-dev/agentlang-index](https://github.com/truffle-dev/agentlang-index)
 currently carries its own copy under
 `harness/src/agentlang_harness/prompt.py`; the two must stay in sync

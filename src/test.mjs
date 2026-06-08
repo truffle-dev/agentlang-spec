@@ -35,6 +35,11 @@ import {
   loadPromptTemplate,
   runEmit,
 } from "./emit.mjs";
+import {
+  parseVerifyArgs,
+  inferLangFromPath,
+  runVerify,
+} from "./verify.mjs";
 
 async function makeTempCorpus(layout) {
   const root = await mkdtemp(path.join(tmpdir(), "agentlang-spec-test-"));
@@ -283,6 +288,297 @@ test("runEmit surfaces an unknown-language error from scaffoldFor", async () => 
         }),
       /unknown --lang 'ocaml'/
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// --- verify verb -------------------------------------------------------
+
+async function makeVerifiableTask(slug, languages, verifyScript) {
+  const root = await mkdtemp(path.join(tmpdir(), "agentlang-spec-verify-"));
+  const taskDir = path.join(root, slug);
+  await mkdir(taskDir, { recursive: true });
+  await writeFile(
+    path.join(taskDir, "spec.json"),
+    JSON.stringify({ slug, title: slug, languages })
+  );
+  for (const lang of languages) {
+    const fname = { zero: "ref.zero", ts: "ref.ts", rust: "ref.rs", go: "ref.go", python: "ref.py" }[lang];
+    if (fname) await writeFile(path.join(taskDir, fname), "// reference stub\n");
+  }
+  await writeFile(path.join(taskDir, "verify.sh"), verifyScript);
+  return root;
+}
+
+test("inferLangFromPath maps each canonical extension to its language", () => {
+  assert.equal(inferLangFromPath("/x/ref.zero"), "zero");
+  assert.equal(inferLangFromPath("ref.ts"), "ts");
+  assert.equal(inferLangFromPath("ref.RS"), "rust");
+  assert.equal(inferLangFromPath("ref.go"), "go");
+  assert.equal(inferLangFromPath("ref.py"), "python");
+  assert.equal(inferLangFromPath("ref.unknown"), undefined);
+});
+
+test("parseVerifyArgs accepts both space- and equals-separated forms", () => {
+  assert.deepEqual(
+    parseVerifyArgs([
+      "--task",
+      "000-hello-stdout",
+      "--solution",
+      "/tmp/x.py",
+      "--lang",
+      "python",
+    ]),
+    { task: "000-hello-stdout", solution: "/tmp/x.py", lang: "python", timeoutS: 60 }
+  );
+  assert.deepEqual(
+    parseVerifyArgs([
+      "--task=000-hello-stdout",
+      "--solution=/tmp/x.go",
+      "--timeout=30",
+    ]),
+    { task: "000-hello-stdout", solution: "/tmp/x.go", lang: "go", timeoutS: 30 }
+  );
+});
+
+test("parseVerifyArgs infers --lang from solution extension when omitted", () => {
+  const args = parseVerifyArgs(["--task", "t", "--solution", "ref.zero"]);
+  assert.equal(args.lang, "zero");
+});
+
+test("parseVerifyArgs rejects missing required flags and bad values", () => {
+  assert.throws(
+    () => parseVerifyArgs(["--solution", "x.py"]),
+    /--task <slug> is required/
+  );
+  assert.throws(
+    () => parseVerifyArgs(["--task", "x"]),
+    /--solution <path> is required/
+  );
+  assert.throws(
+    () => parseVerifyArgs(["--task", "x", "--solution", "x.unknown"]),
+    /cannot infer --lang/
+  );
+  assert.throws(
+    () =>
+      parseVerifyArgs([
+        "--task",
+        "x",
+        "--solution",
+        "x.py",
+        "--lang",
+        "ocaml",
+      ]),
+    /unknown --lang 'ocaml'/
+  );
+  assert.throws(
+    () =>
+      parseVerifyArgs([
+        "--task",
+        "x",
+        "--solution",
+        "x.py",
+        "--timeout",
+        "-3",
+      ]),
+    /--timeout must be a positive number/
+  );
+  assert.throws(
+    () => parseVerifyArgs(["--what"]),
+    /unknown argument: --what/
+  );
+});
+
+test("runVerify shells out to verify.sh and returns its exit code", async () => {
+  const verifyScript =
+    "#!/usr/bin/env bash\n" +
+    "set -uo pipefail\n" +
+    'cd "$(dirname "$0")"\n' +
+    'if [[ "${2:-}" == "python" ]] && grep -q PASS_MARKER ref.py; then\n' +
+    '  echo "PASS: python"\n' +
+    "  exit 0\n" +
+    "fi\n" +
+    'echo "FAIL: python" >&2\n' +
+    "exit 1\n";
+  const root = await makeVerifiableTask("000-hello-stdout", ["python"], verifyScript);
+  const solution = path.join(root, "candidate.py");
+  await writeFile(solution, "# PASS_MARKER\nimport sys\nsys.stdout.write('hello\\n')\n");
+  const outChunks = [];
+  const errChunks = [];
+  try {
+    const result = await runVerify(
+      ["--task", "000-hello-stdout", "--solution", solution],
+      {
+        env: { AGENTLANG_CORPUS_DIR: root },
+        cwd: "/var/empty",
+        stdout: { write: (b) => outChunks.push(String(b)) },
+        stderr: { write: (b) => errChunks.push(String(b)) },
+      }
+    );
+    assert.equal(result.exitCode, 0);
+    assert.ok(outChunks.join("").includes("PASS: python"));
+    assert.equal(errChunks.join(""), "");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("runVerify surfaces verify.sh's non-zero exit and stderr", async () => {
+  const verifyScript =
+    "#!/usr/bin/env bash\n" +
+    'echo "FAIL: rust (stdout mismatch)" >&2\n' +
+    "exit 1\n";
+  const root = await makeVerifiableTask("000-hello-stdout", ["rust"], verifyScript);
+  const solution = path.join(root, "candidate.rs");
+  await writeFile(solution, "fn main() { println!(\"wrong\"); }\n");
+  const outChunks = [];
+  const errChunks = [];
+  try {
+    const result = await runVerify(
+      ["--task", "000-hello-stdout", "--solution", solution],
+      {
+        env: { AGENTLANG_CORPUS_DIR: root },
+        cwd: "/var/empty",
+        stdout: { write: (b) => outChunks.push(String(b)) },
+        stderr: { write: (b) => errChunks.push(String(b)) },
+      }
+    );
+    assert.equal(result.exitCode, 1);
+    assert.ok(errChunks.join("").includes("FAIL: rust"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("runVerify rejects a task that does not declare the language", async () => {
+  const verifyScript = "#!/usr/bin/env bash\nexit 0\n";
+  const root = await makeVerifiableTask("000-hello-stdout", ["go"], verifyScript);
+  const solution = path.join(root, "candidate.py");
+  await writeFile(solution, "print('x')\n");
+  try {
+    await assert.rejects(
+      () =>
+        runVerify(
+          ["--task", "000-hello-stdout", "--solution", solution],
+          {
+            env: { AGENTLANG_CORPUS_DIR: root },
+            cwd: "/var/empty",
+            stdout: { write: () => {} },
+            stderr: { write: () => {} },
+          }
+        ),
+      /does not declare support for lang 'python'/
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("runVerify reports a clear error when the task slug is missing", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "agentlang-spec-verify-miss-"));
+  const solution = path.join(root, "candidate.py");
+  await writeFile(solution, "x\n");
+  try {
+    await assert.rejects(
+      () =>
+        runVerify(
+          ["--task", "999-missing", "--solution", solution],
+          {
+            env: { AGENTLANG_CORPUS_DIR: root },
+            cwd: "/var/empty",
+            stdout: { write: () => {} },
+            stderr: { write: () => {} },
+          }
+        ),
+      /task not found in corpus/
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("runVerify reports a clear error when the solution file is missing", async () => {
+  const verifyScript = "#!/usr/bin/env bash\nexit 0\n";
+  const root = await makeVerifiableTask("000-hello-stdout", ["python"], verifyScript);
+  try {
+    await assert.rejects(
+      () =>
+        runVerify(
+          [
+            "--task",
+            "000-hello-stdout",
+            "--solution",
+            path.join(root, "nope.py"),
+          ],
+          {
+            env: { AGENTLANG_CORPUS_DIR: root },
+            cwd: "/var/empty",
+            stdout: { write: () => {} },
+            stderr: { write: () => {} },
+          }
+        ),
+      /solution not found:/
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("runVerify times out at --timeout and reports exit 124", async () => {
+  const verifyScript = "#!/usr/bin/env bash\nsleep 5\nexit 0\n";
+  const root = await makeVerifiableTask("000-hello-stdout", ["python"], verifyScript);
+  const solution = path.join(root, "candidate.py");
+  await writeFile(solution, "x\n");
+  const errChunks = [];
+  try {
+    const result = await runVerify(
+      [
+        "--task",
+        "000-hello-stdout",
+        "--solution",
+        solution,
+        "--timeout",
+        "1",
+      ],
+      {
+        env: { AGENTLANG_CORPUS_DIR: root },
+        cwd: "/var/empty",
+        stdout: { write: () => {} },
+        stderr: { write: (b) => errChunks.push(String(b)) },
+      }
+    );
+    assert.equal(result.exitCode, 124);
+    assert.ok(errChunks.join("").includes("timeout after 1s"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("runVerify stages the solution into the scratch dir as the reference file", async () => {
+  // verify.sh inspects the file it would compile; we don't actually run a
+  // toolchain. The script proves the solution bytes landed at ref.py.
+  const verifyScript =
+    "#!/usr/bin/env bash\n" +
+    'cd "$(dirname "$0")"\n' +
+    "if grep -q STAGED_OK ref.py; then echo staged; exit 0; fi\n" +
+    "exit 1\n";
+  const root = await makeVerifiableTask("000-hello-stdout", ["python"], verifyScript);
+  const solution = path.join(root, "candidate.py");
+  await writeFile(solution, "# STAGED_OK\n");
+  const outChunks = [];
+  try {
+    const result = await runVerify(
+      ["--task", "000-hello-stdout", "--solution", solution],
+      {
+        env: { AGENTLANG_CORPUS_DIR: root },
+        cwd: "/var/empty",
+        stdout: { write: (b) => outChunks.push(String(b)) },
+        stderr: { write: () => {} },
+      }
+    );
+    assert.equal(result.exitCode, 0);
+    assert.ok(outChunks.join("").includes("staged"));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

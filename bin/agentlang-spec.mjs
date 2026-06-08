@@ -5,6 +5,7 @@
 
 import { runList } from "../src/list.mjs";
 import { runEmit } from "../src/emit.mjs";
+import { runVerify } from "../src/verify.mjs";
 
 const USAGE = `usage: agentlang-spec <verb> [args...]
 
@@ -16,6 +17,14 @@ Verbs:
                                   task. Substitutes {language_scaffold} in the
                                   task's prompt.md with the per-language
                                   scaffold block. Writes to stdout.
+  verify --task <slug> --solution <path> [--lang <lang>] [--timeout <seconds>]
+                                  Stage the solution into a scratch copy of
+                                  the task and run verify.sh against the
+                                  resolved language. Streams verify.sh stdout
+                                  and stderr to the caller. Language is
+                                  inferred from the solution file extension
+                                  when --lang is omitted. Exits with
+                                  verify.sh's exit code (124 on timeout).
 
 Environment:
   AGENTLANG_CORPUS_DIR  Override the corpus directory. Defaults to ./corpus
@@ -35,6 +44,10 @@ async function main() {
     case "emit":
       await runEmit(rest);
       return;
+    case "verify": {
+      const result = await runVerify(rest);
+      process.exit(result.exitCode);
+    }
     default:
       process.stderr.write(`agentlang-spec: unknown verb '${verb}'\n${USAGE}`);
       process.exit(2);
