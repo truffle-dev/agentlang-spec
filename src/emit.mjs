@@ -4,70 +4,59 @@
 // placeholder with the per-language scaffold block, and writes the
 // result to stdout.
 //
-// The scaffold strings below are the canonical source-of-truth for
-// how the AgentLang Index frames a task to a model. They duplicate
-// the strings in agentlang-index's harness/src/agentlang_harness/
-// prompt.py (`_SCAFFOLDS` map). Keep both in sync until a shared
-// `corpus/scaffolds.json` lands; the harness will then read this CLI
-// instead of carrying its own copy.
+// The scaffold strings live in `<corpus>/scaffolds.json`, shipped by
+// the corpus itself (agentlang-index keeps the canonical copy at
+// `corpus/scaffolds.json`). The harness and this CLI both read that
+// file, so neither carries its own copy of the strings.
 
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { resolveCorpusDir } from "./list.mjs";
 
-export const SCAFFOLDS = {
-  zero:
-    "Write a single Zero 0.1.2 source file named `ref.zero`. Define " +
-    "`pub fun main(world: World) -> Void raises`. Use `world.out.write` " +
-    "for stdout and `world.err.write` for stderr. Zero 0.1.2's direct " +
-    "ELF64 backend exposes no stdin capability; if the task requires " +
-    "input, read it from `std.args.get(1)` instead. Fixed-array element " +
-    "types are restricted to i32, u32, and u8; emulate larger integer " +
-    "memos with parallel u32 arrays. Return only the source inside a " +
-    "single ```zero fenced code block.",
-  ts:
-    "Write a single TypeScript source file named `ref.ts`. Read from " +
-    "`process.stdin` if the task requires input and write the answer " +
-    "to `process.stdout`. Keep type annotations minimal so the same " +
-    "source runs under tsx, bun, or plain node. Return only the source " +
-    "inside a single ```ts fenced code block.",
-  rust:
-    "Write a single Rust source file named `ref.rs` that compiles with " +
-    "`rustc ref.rs -o prog` (no Cargo manifest used at runtime). Read " +
-    "from `std::io::stdin` if input is required and write to " +
-    "`std::io::stdout`. Prefer `print!` over `println!` when the spec " +
-    "is byte-exact. Return only the source inside a single ```rust " +
-    "fenced code block.",
-  go:
-    "Write a single Go source file named `ref.go` in `package main`. " +
-    "Read stdin via `bufio.NewReader(os.Stdin)` if input is required. " +
-    "Use `fmt.Print` (not `fmt.Println`) when the spec is byte-exact. " +
-    "The harness runs `go run ref.go`. Return only the source inside " +
-    "a single ```go fenced code block.",
-  python:
-    "Write a single Python 3.12 source file named `ref.py`. Use " +
-    "`sys.stdin.read()` or `input()` for input and `sys.stdout.write` " +
-    "for output (not `print`) when the spec is byte-exact. The harness " +
-    "runs `python3 ref.py`. Return only the source inside a single " +
-    "```python fenced code block.",
-};
-
-const KNOWN_LANGS = Object.keys(SCAFFOLDS);
 const KNOWN_FORMATS = ["prompt"];
 
-export function scaffoldFor(lang) {
-  const block = SCAFFOLDS[lang];
-  if (block === undefined) {
+export async function loadScaffolds(corpusDir) {
+  const scaffoldsPath = path.join(corpusDir, "scaffolds.json");
+  let raw;
+  try {
+    raw = await readFile(scaffoldsPath, "utf8");
+  } catch (err) {
+    if (err.code === "ENOENT") {
+      throw new Error(
+        `scaffolds file not found: ${scaffoldsPath} — the corpus must ` +
+          "ship a scaffolds.json (agentlang-index keeps it at corpus/scaffolds.json)"
+      );
+    }
+    throw err;
+  }
+  let doc;
+  try {
+    doc = JSON.parse(raw);
+  } catch {
+    throw new Error(`malformed scaffolds file (invalid JSON): ${scaffoldsPath}`);
+  }
+  const scaffolds = doc?.scaffolds;
+  if (scaffolds === null || typeof scaffolds !== "object" || Array.isArray(scaffolds)) {
     throw new Error(
-      `unknown --lang '${lang}'. known: ${KNOWN_LANGS.join(", ")}`
+      `malformed scaffolds file (no 'scaffolds' map): ${scaffoldsPath}`
+    );
+  }
+  return scaffolds;
+}
+
+export function scaffoldFor(scaffolds, lang) {
+  const block = scaffolds[lang];
+  if (typeof block !== "string") {
+    throw new Error(
+      `unknown --lang '${lang}'. known: ${Object.keys(scaffolds).join(", ")}`
     );
   }
   return block;
 }
 
-export function renderUserPrompt(template, lang) {
-  return template.replaceAll("{language_scaffold}", scaffoldFor(lang));
+export function renderUserPrompt(template, lang, scaffolds) {
+  return template.replaceAll("{language_scaffold}", scaffoldFor(scaffolds, lang));
 }
 
 export function parseEmitArgs(args) {
@@ -120,7 +109,8 @@ export async function runEmit(
 ) {
   const { task, lang } = parseEmitArgs(args);
   const corpusDir = resolveCorpusDir(env, cwd);
+  const scaffolds = await loadScaffolds(corpusDir);
   const template = await loadPromptTemplate(corpusDir, task);
-  const rendered = renderUserPrompt(template, lang);
+  const rendered = renderUserPrompt(template, lang, scaffolds);
   stdout.write(rendered);
 }

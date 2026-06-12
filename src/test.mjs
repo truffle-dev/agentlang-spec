@@ -28,7 +28,7 @@ import {
   loadTaskRecord,
 } from "./list.mjs";
 import {
-  SCAFFOLDS,
+  loadScaffolds,
   scaffoldFor,
   renderUserPrompt,
   parseEmitArgs,
@@ -155,38 +155,89 @@ test("loadTaskRecord throws a useful error on malformed JSON", async () => {
 
 // --- emit verb ---------------------------------------------------------
 
-async function makeTempCorpusWithPrompt(slug, body) {
+// Fixture scaffolds mirror the shape of the canonical
+// agentlang-index `corpus/scaffolds.json` without depending on a
+// harness checkout being present.
+const FIXTURE_SCAFFOLDS = {
+  zero: "Write a single Zero 0.1.2 source file named `ref.zero`.",
+  ts: "Write a single TypeScript source file named `ref.ts`.",
+  rust: "Write a single Rust source file named `ref.rs`.",
+  go: "Write a single Go source file named `ref.go`.",
+  python: "Write a single Python 3.12 source file named `ref.py`.",
+};
+
+async function makeTempCorpusWithPrompt(slug, body, { scaffolds = FIXTURE_SCAFFOLDS } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "agentlang-spec-emit-"));
   const taskDir = path.join(root, slug);
   await mkdir(taskDir, { recursive: true });
   await writeFile(path.join(taskDir, "prompt.md"), body);
+  if (scaffolds !== null) {
+    await writeFile(
+      path.join(root, "scaffolds.json"),
+      JSON.stringify({
+        version: 1,
+        placeholder: "{language_scaffold}",
+        scaffolds,
+      })
+    );
+  }
   return root;
 }
 
-test("SCAFFOLDS covers exactly the five canonical languages", () => {
-  assert.deepEqual(
-    Object.keys(SCAFFOLDS).sort(),
-    ["go", "python", "rust", "ts", "zero"]
-  );
+test("loadScaffolds reads the corpus scaffolds.json map", async () => {
+  const root = await makeTempCorpusWithPrompt("000-hello-stdout", "BODY\n");
+  try {
+    const scaffolds = await loadScaffolds(root);
+    assert.deepEqual(
+      Object.keys(scaffolds).sort(),
+      ["go", "python", "rust", "ts", "zero"]
+    );
+    assert.equal(scaffolds.zero, FIXTURE_SCAFFOLDS.zero);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("loadScaffolds raises a clear error when scaffolds.json is missing", async () => {
+  const root = await makeTempCorpusWithPrompt("000-hello-stdout", "BODY\n", {
+    scaffolds: null,
+  });
+  try {
+    await assert.rejects(() => loadScaffolds(root), /scaffolds file not found:/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("loadScaffolds rejects malformed scaffolds.json", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "agentlang-spec-emit-bad-"));
+  try {
+    await writeFile(path.join(root, "scaffolds.json"), "not-json");
+    await assert.rejects(() => loadScaffolds(root), /invalid JSON/);
+    await writeFile(path.join(root, "scaffolds.json"), JSON.stringify({ version: 1 }));
+    await assert.rejects(() => loadScaffolds(root), /no 'scaffolds' map/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("scaffoldFor returns the per-language block and rejects unknown langs", () => {
-  assert.ok(scaffoldFor("zero").startsWith("Write a single Zero 0.1.2"));
-  assert.ok(scaffoldFor("python").includes("ref.py"));
-  assert.throws(() => scaffoldFor("ocaml"), /unknown --lang 'ocaml'/);
+  assert.ok(scaffoldFor(FIXTURE_SCAFFOLDS, "zero").startsWith("Write a single Zero 0.1.2"));
+  assert.ok(scaffoldFor(FIXTURE_SCAFFOLDS, "python").includes("ref.py"));
+  assert.throws(() => scaffoldFor(FIXTURE_SCAFFOLDS, "ocaml"), /unknown --lang 'ocaml'/);
 });
 
 test("renderUserPrompt substitutes every {language_scaffold} occurrence", () => {
   const tmpl = "head\n{language_scaffold}\nmid\n{language_scaffold}\ntail\n";
-  const out = renderUserPrompt(tmpl, "ts");
+  const out = renderUserPrompt(tmpl, "ts", FIXTURE_SCAFFOLDS);
   const expected =
-    "head\n" + SCAFFOLDS.ts + "\nmid\n" + SCAFFOLDS.ts + "\ntail\n";
+    "head\n" + FIXTURE_SCAFFOLDS.ts + "\nmid\n" + FIXTURE_SCAFFOLDS.ts + "\ntail\n";
   assert.equal(out, expected);
 });
 
 test("renderUserPrompt is a no-op when the placeholder is absent", () => {
   const tmpl = "no placeholder here\n";
-  assert.equal(renderUserPrompt(tmpl, "rust"), "no placeholder here\n");
+  assert.equal(renderUserPrompt(tmpl, "rust", FIXTURE_SCAFFOLDS), "no placeholder here\n");
 });
 
 test("parseEmitArgs accepts space-separated and equals-separated forms", () => {
@@ -249,7 +300,7 @@ test("runEmit writes the rendered prompt to stdout", async () => {
     });
     const out = chunks.join("");
     assert.ok(out.startsWith("# Task: Hello"));
-    assert.ok(out.includes(SCAFFOLDS.go));
+    assert.ok(out.includes(FIXTURE_SCAFFOLDS.go));
     assert.ok(!out.includes("{language_scaffold}"));
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -267,7 +318,7 @@ test("runEmit honors AGENTLANG_CORPUS_DIR over cwd", async () => {
       cwd: "/var/empty",
       stdout: fakeStdout,
     });
-    assert.equal(chunks.join(""), SCAFFOLDS.rust + "\n");
+    assert.equal(chunks.join(""), FIXTURE_SCAFFOLDS.rust + "\n");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

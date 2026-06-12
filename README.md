@@ -58,8 +58,11 @@ passthrough) land on the same surface.
 The corpus directory resolves the same way as `list`
 (`AGENTLANG_CORPUS_DIR` then `./corpus`).
 
-The scaffold strings are the canonical source-of-truth for how a task
-is framed to a model.
+The scaffold strings come from `<corpus>/scaffolds.json`, shipped by
+the corpus itself ([truffle-dev/agentlang-index](https://github.com/truffle-dev/agentlang-index)
+keeps the canonical copy at `corpus/scaffolds.json`). They are the
+source-of-truth for how a task is framed to a model; the harness reads
+the same file, so neither side carries its own copy.
 
 ## `verify`
 
@@ -78,12 +81,7 @@ return code. `124` signals a timeout (default 60s, override with
 The language is inferred from the solution file extension when
 `--lang` is omitted: `.zero`, `.ts`, `.rs`, `.go`, `.py`. The
 task's `spec.json` `languages` array must include the resolved
-language. The harness in
-[truffle-dev/agentlang-index](https://github.com/truffle-dev/agentlang-index)
-currently carries its own copy under
-`harness/src/agentlang_harness/prompt.py`; the two must stay in sync
-until a shared `corpus/scaffolds.json` lands and the harness reads
-through this CLI.
+language.
 
 ## Install
 
